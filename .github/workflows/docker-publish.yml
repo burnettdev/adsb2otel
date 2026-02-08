@@ -12,6 +12,8 @@ on:
     tags: [ 'v*.*.*' ]
   pull_request:
     branches: [ "main" ]
+  release:
+    types: [published]
 
 env:
   # Use docker.io for Docker Hub if empty
