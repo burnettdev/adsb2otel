@@ -48,8 +48,8 @@ Thumbs.db
 
 # Logs
 *.log
-logs/
-log/
+/logs/
+/log/
 
 # Temporary files
 *.tmp
