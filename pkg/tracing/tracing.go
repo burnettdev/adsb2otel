@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -22,30 +23,55 @@ func InitTracing() (func(), error) {
 		return func() {}, nil
 	}
 
-	// Get OTLP endpoint from environment variables
+	// Get OTLP endpoint from environment variables (shared first, then signal-specific)
 	endpoint := getOTLPEndpoint()
 
-	// Check if connection should be insecure
-	insecure := isTrue(getEnv("OTEL_EXPORTER_OTLP_TRACES_INSECURE", "true"))
+	// Check if connection should be insecure (shared first, then signal-specific)
+	insecure := getEnvBool("OTEL_EXPORTER_OTLP_INSECURE", "OTEL_EXPORTER_OTLP_TRACES_INSECURE", true)
 
-	// Parse headers if provided
-	headers := parseHeaders(getEnv("OTEL_EXPORTER_OTLP_TRACES_HEADERS", ""))
+	// Parse headers if provided (shared first, then signal-specific)
+	headers := parseHeaders(getEnvWithFallback("OTEL_EXPORTER_OTLP_HEADERS", "OTEL_EXPORTER_OTLP_TRACES_HEADERS", ""))
 
-	// Create OTLP exporter options
-	opts := []otlptracehttp.Option{
-		otlptracehttp.WithEndpoint(endpoint),
+	// Determine protocol (http or grpc) - shared first, then signal-specific
+	protocol := strings.ToLower(getEnvWithFallback("OTEL_EXPORTER_OTLP_PROTOCOL", "OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http"))
+	if protocol != "http" && protocol != "grpc" {
+		log.Printf("Invalid protocol %s, defaulting to http", protocol)
+		protocol = "http"
 	}
 
-	if insecure {
-		opts = append(opts, otlptracehttp.WithInsecure())
-	}
+	var exporter trace.SpanExporter
+	var err error
 
-	if len(headers) > 0 {
-		opts = append(opts, otlptracehttp.WithHeaders(headers))
-	}
+	// Create exporter based on protocol
+	if protocol == "grpc" {
+		opts := []otlptracegrpc.Option{
+			otlptracegrpc.WithEndpoint(endpoint),
+		}
 
-	// Create OTLP exporter
-	exporter, err := otlptracehttp.New(context.Background(), opts...)
+		if insecure {
+			opts = append(opts, otlptracegrpc.WithInsecure())
+		}
+
+		if len(headers) > 0 {
+			opts = append(opts, otlptracegrpc.WithHeaders(headers))
+		}
+
+		exporter, err = otlptracegrpc.New(context.Background(), opts...)
+	} else {
+		opts := []otlptracehttp.Option{
+			otlptracehttp.WithEndpoint(endpoint),
+		}
+
+		if insecure {
+			opts = append(opts, otlptracehttp.WithInsecure())
+		}
+
+		if len(headers) > 0 {
+			opts = append(opts, otlptracehttp.WithHeaders(headers))
+		}
+
+		exporter, err = otlptracehttp.New(context.Background(), opts...)
+	}
 	if err != nil {
 		log.Printf("Failed to create OTLP exporter, using noop: %v", err)
 		// Return a noop shutdown function if exporter creation fails
@@ -56,7 +82,7 @@ func InitTracing() (func(), error) {
 	res, err := resource.New(context.Background(),
 		resource.WithAttributes(
 			// Service identification
-			semconv.ServiceName("adsb2loki"),
+			semconv.ServiceName("adsb2otel"),
 			semconv.ServiceVersion("1.0.0"),
 
 			// Process and runtime information
@@ -85,7 +111,7 @@ func InitTracing() (func(), error) {
 	otel.SetTracerProvider(tp)
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 
-	log.Println("OpenTelemetry tracing initialized successfully")
+	log.Printf("OpenTelemetry tracing initialized successfully (protocol: %s, endpoint: %s)", protocol, endpoint)
 
 	return func() {
 		if err := tp.Shutdown(context.Background()); err != nil {
@@ -109,18 +135,19 @@ func isTrue(s string) bool {
 }
 
 // getOTLPEndpoint determines the OTLP endpoint from environment variables
+// Uses shared OTEL_EXPORTER_OTLP_ENDPOINT first, then signal-specific override
 func getOTLPEndpoint() string {
-	// Check for traces-specific endpoint first
-	if endpoint := getEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", ""); endpoint != "" {
-		return cleanEndpoint(endpoint)
-	}
-
-	// Fall back to general OTLP endpoint
+	// Check for shared OTLP endpoint first
 	if endpoint := getEnv("OTEL_EXPORTER_OTLP_ENDPOINT", ""); endpoint != "" {
 		return cleanEndpoint(endpoint)
 	}
 
-	// Default to localhost
+	// Fall back to traces-specific endpoint if shared is not set
+	if endpoint := getEnv("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", ""); endpoint != "" {
+		return cleanEndpoint(endpoint)
+	}
+
+	// Default to localhost (HTTP default port)
 	return "localhost:4318"
 }
 
@@ -129,6 +156,8 @@ func cleanEndpoint(endpoint string) string {
 	// Remove http:// or https:// prefix if present
 	endpoint = strings.TrimPrefix(endpoint, "http://")
 	endpoint = strings.TrimPrefix(endpoint, "https://")
+	// Remove grpc:// prefix if present
+	endpoint = strings.TrimPrefix(endpoint, "grpc://")
 	
 	// Remove /v1/traces suffix if present since WithEndpoint handles the path separately
 	if strings.HasSuffix(endpoint, "/v1/traces") {
@@ -139,6 +168,25 @@ func cleanEndpoint(endpoint string) string {
 	endpoint = strings.TrimSuffix(endpoint, "/")
 	
 	return endpoint
+}
+
+// getEnvWithFallback returns the value of the primary env var, or falls back to secondary
+func getEnvWithFallback(primary, secondary, defaultValue string) string {
+	if value := getEnv(primary, ""); value != "" {
+		return value
+	}
+	return getEnv(secondary, defaultValue)
+}
+
+// getEnvBool returns a boolean value, checking primary env var first, then secondary
+func getEnvBool(primary, secondary string, defaultValue bool) bool {
+	if value := getEnv(primary, ""); value != "" {
+		return isTrue(value)
+	}
+	if value := getEnv(secondary, ""); value != "" {
+		return isTrue(value)
+	}
+	return defaultValue
 }
 
 // parseHeaders parses header string in format "key1=value1,key2=value2"
