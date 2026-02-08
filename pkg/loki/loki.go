@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/burnettdev/adsb2loki/pkg/logging"
+	"github.com/burnettdev/adsb2otel/pkg/logging"
 )
 
 type Client struct {
@@ -123,7 +123,7 @@ func (c *Client) PushLogs(ctx context.Context, entries []LogEntry) error {
 		return fmt.Errorf("failed to create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("User-Agent", "adsb2loki/1.0.0")
+	req.Header.Set("User-Agent", "adsb2otel/1.0.0")
 
 	if c.tenantID != "" && c.password != "" {
 		req.SetBasicAuth(c.tenantID, c.password)

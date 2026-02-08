@@ -1,4 +1,4 @@
-module github.com/burnettdev/adsb2loki
+module github.com/burnettdev/adsb2otel
 
 go 1.24.0
 

@@ -7,10 +7,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/burnettdev/adsb2loki/pkg/flightdata"
-	"github.com/burnettdev/adsb2loki/pkg/logging"
-	"github.com/burnettdev/adsb2loki/pkg/otel/logs"
-	"github.com/burnettdev/adsb2loki/pkg/tracing"
+	"github.com/burnettdev/adsb2otel/pkg/flightdata"
+	"github.com/burnettdev/adsb2otel/pkg/logging"
+	"github.com/burnettdev/adsb2otel/pkg/otel/logs"
+	"github.com/burnettdev/adsb2otel/pkg/tracing"
 	"github.com/joho/godotenv"
 )
 

@@ -14,9 +14,9 @@ import (
 	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/burnettdev/adsb2loki/pkg/logging"
-	"github.com/burnettdev/adsb2loki/pkg/models"
-	"github.com/burnettdev/adsb2loki/pkg/otel/logs"
+	"github.com/burnettdev/adsb2otel/pkg/logging"
+	"github.com/burnettdev/adsb2otel/pkg/models"
+	"github.com/burnettdev/adsb2otel/pkg/otel/logs"
 )
 
 var (
