@@ -11,11 +11,12 @@ import (
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	otellog "go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/trace"
 
-	"github.com/burnettdev/adsb2loki/pkg/logging"
-	"github.com/burnettdev/adsb2loki/pkg/loki"
-	"github.com/burnettdev/adsb2loki/pkg/models"
+	"github.com/burnettdev/adsb2otel/pkg/logging"
+	"github.com/burnettdev/adsb2otel/pkg/models"
+	"github.com/burnettdev/adsb2otel/pkg/otel/logs"
 )
 
 var (
@@ -26,7 +27,7 @@ var (
 	tracer = otel.Tracer("flightdata-client")
 )
 
-func FetchAndPushToLoki(ctx context.Context, lokiClient *loki.Client) error {
+func FetchAndPushLogs(ctx context.Context) error {
 	ctx, span := tracer.Start(ctx, "flightdata.fetch_and_push",
 		trace.WithAttributes(
 			attribute.String("service", "adsb"),
@@ -34,10 +35,10 @@ func FetchAndPushToLoki(ctx context.Context, lokiClient *loki.Client) error {
 	)
 	defer span.End()
 
-	logging.DebugCall("FetchAndPushToLoki")
+	logging.DebugCallCtx(ctx, "FetchAndPushLogs")
 
 	flightDataURL := os.Getenv("FLIGHT_DATA_URL")
-	logging.Debug("Flight data URL configured", "url", flightDataURL)
+	logging.DebugCtx(ctx, "Flight data URL configured", "url", flightDataURL)
 
 	span.SetAttributes(
 		attribute.String("http.url", flightDataURL),
@@ -46,12 +47,12 @@ func FetchAndPushToLoki(ctx context.Context, lokiClient *loki.Client) error {
 
 	// Create HTTP request with context for automatic tracing via otelhttp
 	req, err := http.NewRequestWithContext(ctx, "GET", flightDataURL, nil)
-	if err != nil {
+		if err != nil {
 		span.RecordError(err)
-		logging.Error("Failed to create HTTP request", "error", err, "url", flightDataURL)
+		logging.ErrorCtx(ctx, "Failed to create HTTP request", "error", err, "url", flightDataURL)
 		return fmt.Errorf("failed to create request: %w", err)
 	}
-	req.Header.Set("User-Agent", "adsb2loki/1.0.0")
+	req.Header.Set("User-Agent", "adsb2otel/1.0.0")
 
 	start := time.Now()
 	resp, err := httpClient.Do(req)
@@ -59,25 +60,25 @@ func FetchAndPushToLoki(ctx context.Context, lokiClient *loki.Client) error {
 
 	if err != nil {
 		span.RecordError(err)
-		logging.Error("Failed to fetch dump1090-fa data", "error", err, "url", flightDataURL, "duration_ms", duration.Milliseconds())
+		logging.ErrorCtx(ctx, "Failed to fetch dump1090-fa data", "error", err, "url", flightDataURL, "duration_ms", duration.Milliseconds())
 		return fmt.Errorf("failed to fetch dump1090-fa data: %w", err)
 	}
 	defer resp.Body.Close()
 
 	span.SetAttributes(attribute.Int("http.status_code", resp.StatusCode))
-	logging.DebugHTTP("GET", flightDataURL, resp.StatusCode, duration)
+	logging.DebugHTTPCtx(ctx, "GET", flightDataURL, resp.StatusCode, duration)
 
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("HTTP request failed with status: %s", resp.Status)
 		span.RecordError(err)
-		logging.Error("HTTP request returned non-200 status", "status_code", resp.StatusCode, "status", resp.Status)
+		logging.ErrorCtx(ctx, "HTTP request returned non-200 status", "status_code", resp.StatusCode, "status", resp.Status)
 		return err
 	}
 
 	var data models.Dump1090fa
 	if err := json.NewDecoder(resp.Body).Decode(&data); err != nil {
 		span.RecordError(err)
-		logging.Error("Failed to decode dump1090-fa data", "error", err)
+		logging.ErrorCtx(ctx, "Failed to decode dump1090-fa data", "error", err)
 		return fmt.Errorf("failed to decode dump1090-fa data: %w", err)
 	}
 
@@ -87,43 +88,73 @@ func FetchAndPushToLoki(ctx context.Context, lokiClient *loki.Client) error {
 		attribute.Int("data.messages", data.Messages),
 	)
 
-	logging.Debug("Successfully parsed flight data", "aircraft_count", len(data.Aircraft), "timestamp", data.Now, "messages", data.Messages)
+	logging.DebugCtx(ctx, "Successfully parsed flight data", "aircraft_count", len(data.Aircraft), "timestamp", data.Now, "messages", data.Messages)
 
-	entries := make([]loki.LogEntry, 0, len(data.Aircraft))
+	// Get logger instance
+	logger := logs.GetLogger("flightdata")
+	if logger == nil {
+		logging.WarnCtx(ctx, "OpenTelemetry logger not initialized, skipping log emission")
+		return nil
+	}
+
+	// Emit log records for each aircraft
+	timestamp := time.Unix(int64(data.Now), 0)
+	logsEmitted := 0
+
 	for i, aircraft := range data.Aircraft {
-		logging.Debug("Processing aircraft", "index", i, "hex", aircraft.Hex, "flight", aircraft.Flight, "lat", aircraft.Lat, "lon", aircraft.Lon, "alt_baro", aircraft.AltBaro.String())
+		logging.DebugCtx(ctx, "Processing aircraft", "index", i, "hex", aircraft.Hex, "flight", aircraft.Flight, "lat", aircraft.Lat, "lon", aircraft.Lon, "alt_baro", aircraft.AltBaro.String())
 
 		aircraftJSON, err := json.Marshal(aircraft)
 		if err != nil {
-			logging.Error("Failed to marshal aircraft data", "error", err, "aircraft_hex", aircraft.Hex)
+			logging.ErrorCtx(ctx, "Failed to marshal aircraft data", "error", err, "aircraft_hex", aircraft.Hex)
 			return fmt.Errorf("failed to marshal aircraft data: %w", err)
 		}
 
-		labels := map[string]string{
-			"service": "adsb",
+		// Build attributes for the log record
+		attrs := []otellog.KeyValue{
+			otellog.String("service", "adsb"),
+			otellog.String("aircraft.hex", aircraft.Hex),
+			otellog.String("aircraft.type", aircraft.Type),
 		}
 
-		entry := loki.LogEntry{
-			Timestamp: time.Unix(int64(data.Now), 0),
-			Labels:    labels,
-			Line:      string(aircraftJSON),
+		// Add optional fields as attributes
+		if aircraft.Flight != "" {
+			attrs = append(attrs, otellog.String("aircraft.flight", aircraft.Flight))
+		}
+		if aircraft.Lat != 0 {
+			attrs = append(attrs, otellog.Float64("aircraft.lat", aircraft.Lat))
+		}
+		if aircraft.Lon != 0 {
+			attrs = append(attrs, otellog.Float64("aircraft.lon", aircraft.Lon))
+		}
+		if aircraft.AltBaro.String() != "" {
+			attrs = append(attrs, otellog.String("aircraft.alt_baro", aircraft.AltBaro.String()))
+		}
+		if aircraft.Squawk != "" {
+			attrs = append(attrs, otellog.String("aircraft.squawk", aircraft.Squawk))
 		}
 
-		entries = append(entries, entry)
+		// Create log record with trace context
+		record := otellog.Record{}
+		record.SetTimestamp(timestamp)
+		record.SetSeverity(otellog.SeverityInfo)
+		record.SetBody(otellog.StringValue(string(aircraftJSON)))
+		
+		// Add attributes to the record
+		record.AddAttributes(attrs...)
+
+		// Emit log record
+		logger.Emit(ctx, record)
+
+		logsEmitted++
 	}
 
-	logging.Debug("Converted aircraft data to Loki entries", "entries_count", len(entries))
-
-	if err := lokiClient.PushLogs(ctx, entries); err != nil {
-		span.RecordError(err)
-		logging.Error("Failed to push logs to Loki", "error", err, "entries_count", len(entries))
-		return fmt.Errorf("failed to push logs to Loki: %w", err)
-	}
+	logging.DebugCtx(ctx, "Converted aircraft data to OTel log records", "entries_count", logsEmitted)
 
 	span.SetAttributes(
-		attribute.Int("loki.entries_pushed", len(entries)),
+		attribute.Int("otel.logs_emitted", logsEmitted),
 	)
 
-	logging.Info("Successfully fetched and pushed aircraft data", "aircraft_count", len(data.Aircraft), "entries_pushed", len(entries))
+	logging.InfoCtx(ctx, "Successfully fetched and pushed aircraft data", "aircraft_count", len(data.Aircraft), "logs_emitted", logsEmitted)
 	return nil
 }

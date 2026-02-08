@@ -9,6 +9,12 @@ import (
 type FlexibleString string
 
 func (fs *FlexibleString) UnmarshalJSON(data []byte) error {
+	// Handle null values
+	if string(data) == "null" {
+		*fs = FlexibleString("")
+		return nil
+	}
+	
 	// Try to unmarshal as string first
 	var s string
 	if err := json.Unmarshal(data, &s); err == nil {
@@ -20,6 +26,13 @@ func (fs *FlexibleString) UnmarshalJSON(data []byte) error {
 	var n float64
 	if err := json.Unmarshal(data, &n); err == nil {
 		*fs = FlexibleString(fmt.Sprintf("%.0f", n))
+		return nil
+	}
+	
+	// Try as integer as well
+	var i int64
+	if err := json.Unmarshal(data, &i); err == nil {
+		*fs = FlexibleString(fmt.Sprintf("%d", i))
 		return nil
 	}
 	

@@ -7,10 +7,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/burnettdev/adsb2loki/pkg/flightdata"
-	"github.com/burnettdev/adsb2loki/pkg/logging"
-	"github.com/burnettdev/adsb2loki/pkg/loki"
-	"github.com/burnettdev/adsb2loki/pkg/tracing"
+	"github.com/burnettdev/adsb2otel/pkg/flightdata"
+	"github.com/burnettdev/adsb2otel/pkg/logging"
+	"github.com/burnettdev/adsb2otel/pkg/otel/logs"
+	"github.com/burnettdev/adsb2otel/pkg/tracing"
 	"github.com/joho/godotenv"
 )
 
@@ -40,22 +40,13 @@ func main() {
 	}
 	defer shutdownTracing()
 
-	lokiURL := os.Getenv("LOKI_URL")
-	logger.Debug("Loki URL configuration", "url", lokiURL)
-
-	var lokiClient *loki.Client
-
-	tenantID := os.Getenv("GRAFANA_TENANT_ID")
-	password := os.Getenv("GRAFANA_PASSWORD")
-
-	if tenantID != "" && password != "" {
-		logger.Info("Using Grafana Cloud authentication", "tenant_id", tenantID)
-		logger.Debug("Grafana Cloud credentials found", "tenant_id", tenantID, "password_set", password != "")
-		lokiClient = loki.NewClientWithAuth(lokiURL, tenantID, password)
-	} else {
-		logger.Info("No authentication configured - using local Grafana instance mode")
-		lokiClient = loki.NewClient(lokiURL)
+	// Initialize OpenTelemetry logging
+	shutdownLogs, err := logs.InitLogs()
+	if err != nil {
+		logger.Error("Failed to initialize OpenTelemetry logging", "error", err)
+		// Continue without logging rather than failing
 	}
+	defer shutdownLogs()
 
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -69,12 +60,12 @@ func main() {
 	for {
 		select {
 		case <-ticker.C:
-			logger.Debug("Ticker fired - fetching data")
+			logging.DebugCtx(ctx, "Ticker fired - fetching data")
 
-			if err := flightdata.FetchAndPushToLoki(ctx, lokiClient); err != nil {
-				logger.Error("Error fetching and pushing data", "error", err)
+			if err := flightdata.FetchAndPushLogs(ctx); err != nil {
+				logging.ErrorCtx(ctx, "Error fetching and pushing data", "error", err)
 			} else {
-				logger.Debug("Data fetch and push completed successfully")
+				logging.DebugCtx(ctx, "Data fetch and push completed successfully")
 			}
 
 		case sig := <-sigChan:
