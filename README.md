@@ -8,9 +8,6 @@
 - dump1090-fa instance (such as piAware or ADS-B Feeder)
 - OpenTelemetry-compatible backend
 
-## Demo
-
-You can view live aircraft data from an aerial located in Bristol, UK on our Grafana Dashboard found <a href="https://elfordo.grafana.net/public-dashboards/5faf150d58cd4b818e0b3d98c2d35dfd">here.</a>
 
 ## Configuration
 
