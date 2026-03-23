@@ -15,7 +15,7 @@ RUN go mod download && go mod tidy && go mod verify
 # Build the application
 RUN go build -o app .
 
-FROM debian:12.12-slim
+FROM debian:12.13-slim
 
 # Install ca-certificates for SSL certificate verification
 RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
