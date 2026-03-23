@@ -30,11 +30,17 @@ jobs:
     - name: Build Docker image
       run: docker build -t burnettdev/adsb2otel .
 
-    - name: Run Snyk container test and generate SARIF
+    - name: Run Snyk to check Docker image for vulnerabilities
       continue-on-error: true
+      uses: snyk/actions/docker@14818c4695ecc4045f33c9cee9e795a788711ca4
       env:
         SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
         SNYK_API: https://api.eu.snyk.io
-      run: |
-        snyk container test burnettdev/adsb2otel \
-          --file=Dockerfile \
+      with:
+        image: burnettdev/adsb2otel
+        args: --file=Dockerfile --sarif-file-output=snyk.sarif --severity-threshold=medium
+        
+    - name: Upload result to GitHub Code Scanning
+      uses: github/codeql-action/upload-sarif@v4
+      with:
+        sarif_file: snyk.sarif
